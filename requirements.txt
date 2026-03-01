@@ -1,3 +1,5 @@
 streamlit
 PyMuPDF
 python-docx
+pandas
+openpyxl
