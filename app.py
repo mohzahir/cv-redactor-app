@@ -49,7 +49,9 @@ if uploaded_file is not None:
 
         # --- LOGIC FOR WORD FILES ---
         elif file_ext == "docx":
-            doc = Document(uploaded_file)
+            # Read into a stable memory buffer first to avoid CRC errors
+            docx_bytes = uploaded_file.read()
+            doc = Document(io.BytesIO(docx_bytes))
             
             # Helper function to replace text using regex
             def replace_text_in_run(run):
@@ -86,3 +88,4 @@ if uploaded_file is not None:
         
     except Exception as e:
         st.error(f"An error occurred: {e}")
+
