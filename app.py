@@ -3,24 +3,25 @@ import fitz  # PyMuPDF
 import re
 import io
 import zipfile
+import pandas as pd
 from docx import Document
 
-# Set up the page appearance
-st.set_page_config(page_title="CV Redactor Tool", page_icon="📄")
-st.title("Bulk CV Contact Redactor (OCR Enabled)")
-st.write("Upload multiple PDF (including scanned images) or Word CVs to automatically redact emails, phone numbers, and LinkedIn URLs.")
+st.set_page_config(page_title="CV Redactor & Extractor", page_icon="📄")
+st.title("Bulk CV Redactor & Data Extractor")
+st.write("Upload CVs to redact contact info AND generate an Excel summary of candidate data.")
 
-# File uploader widget
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
 if uploaded_files:
     st.info(f"Processing {len(uploaded_files)} document(s)...")
     
-    # Compile our regex patterns
     email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
     phone_pattern = re.compile(r"\+?\d{1,4}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}")
     linkedin_pattern = re.compile(r"linkedin\.com/in/[a-zA-Z0-9_-]+")
     patterns = [email_pattern, phone_pattern, linkedin_pattern]
+
+    # This list will hold all the data for our Excel sheet
+    all_candidates_data = []
 
     try:
         zip_buffer = io.BytesIO()
@@ -30,6 +31,8 @@ if uploaded_files:
                 file_ext = uploaded_file.name.split('.')[-1].lower()
                 output_buffer = io.BytesIO()
                 output_filename = f"REDACTED_{uploaded_file.name}"
+                
+                full_text_for_extraction = ""
 
                 # --- LOGIC FOR PDF FILES ---
                 if file_ext == "pdf":
@@ -37,37 +40,26 @@ if uploaded_files:
                     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                     
                     for page in doc:
-                        # 1. Standard text extraction
                         text = page.get_text("text")
-                        tp = None  # TextPage placeholder
+                        tp = None
                         
-                        # 2. OCR Fallback for scanned images
-                        # If the page has very little text, it is likely an image
                         if len(text.strip()) < 50:
                             try:
-                                # Trigger Tesseract OCR to read the image
                                 tp = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True)
                                 text = tp.extractText()
                             except Exception:
-                                st.warning(f"Note: Could not run OCR on a page in {uploaded_file.name}")
+                                pass
+                                
+                        full_text_for_extraction += text + "\n"
                         
-                        # 3. Find and Redact
+                        # Redaction process
                         for pattern in patterns:
                             for match in pattern.finditer(text):
                                 sensitive_text = match.group()
-                                
-                                # If we used OCR, we must search the generated OCR TextPage
-                                if tp:
-                                    text_instances = page.search_for(sensitive_text, textpage=tp)
-                                else:
-                                    text_instances = page.search_for(sensitive_text)
-                                    
+                                text_instances = page.search_for(sensitive_text, textpage=tp) if tp else page.search_for(sensitive_text)
                                 for inst in text_instances:
                                     page.add_redact_annot(inst, fill=(0, 0, 0))
-                                    
-                        # Apply redactions. 'images=fitz.PDF_REDACT_IMAGE_PIXELS' ensures that the underlying 
-                        # image data is physically deleted behind the black box so it cannot be recovered.
-                        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS) 
+                        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
                         
                     doc.save(output_buffer, garbage=4, deflate=True)
                     doc.close()
@@ -76,6 +68,9 @@ if uploaded_files:
                 elif file_ext == "docx":
                     docx_bytes = uploaded_file.read()
                     doc = Document(io.BytesIO(docx_bytes))
+                    
+                    # Extract text for our Excel sheet before redacting
+                    full_text_for_extraction = "\n".join([para.text for para in doc.paragraphs])
                     
                     def replace_text_in_run(run):
                         for pattern in patterns:
@@ -95,15 +90,49 @@ if uploaded_files:
                                         
                     doc.save(output_buffer)
 
-                # Write the finished individual file into the zip archive
+                # --- DATA EXTRACTION FOR EXCEL ---
+                # Find all emails and phones in the raw text
+                found_emails = email_pattern.findall(full_text_for_extraction)
+                found_phones = phone_pattern.findall(full_text_for_extraction)
+                
+                # Guess the name (usually the first non-empty line of a CV)
+                text_lines = [line.strip() for line in full_text_for_extraction.split('\n') if line.strip()]
+                guessed_name = text_lines[0] if text_lines else "Unknown"
+
+                # Append to our master list
+                all_candidates_data.append({
+                    "File Name": uploaded_file.name,
+                    "Candidate Name (Guessed)": guessed_name,
+                    "Email": found_emails[0] if found_emails else "Not Found",
+                    "Phone": found_phones[0] if found_phones else "Not Found",
+                    "Qualification": "",
+                    "Age": "",
+                    "Current Position": "",
+                    "Nationality": "",
+                    "Current Location": ""
+                })
+
+                # Write redacted CV to zip
                 zip_file.writestr(output_filename, output_buffer.getvalue())
 
-        st.success("All documents processed successfully!")
+            # --- CREATE THE EXCEL FILE ---
+            # Convert our list of data into a Pandas DataFrame (a digital table)
+            df = pd.DataFrame(all_candidates_data)
+            
+            # Save the DataFrame to an Excel file in memory
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Candidates')
+            
+            # Add the completed Excel file into the Zip folder
+            zip_file.writestr("Candidate_Summary_Data.xlsx", excel_buffer.getvalue())
+
+        st.success("All documents processed! Excel sheet generated.")
         
         st.download_button(
-            label="Download All Redacted CVs (ZIP)",
+            label="Download Zip (Redacted CVs + Excel Data)",
             data=zip_buffer.getvalue(),
-            file_name="Redacted_CVs.zip",
+            file_name="Processed_CVs_and_Data.zip",
             mime="application/zip"
         )
         
