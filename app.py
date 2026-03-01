@@ -7,10 +7,10 @@ from docx import Document
 
 # Set up the page appearance
 st.set_page_config(page_title="CV Redactor Tool", page_icon="📄")
-st.title("Bulk CV Contact Redactor")
-st.write("Upload multiple PDF or Word CVs to automatically redact emails, phone numbers, and LinkedIn URLs.")
+st.title("Bulk CV Contact Redactor (OCR Enabled)")
+st.write("Upload multiple PDF (including scanned images) or Word CVs to automatically redact emails, phone numbers, and LinkedIn URLs.")
 
-# File uploader widget now accepts MULTIPLE files
+# File uploader widget
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
 if uploaded_files:
@@ -23,11 +23,9 @@ if uploaded_files:
     patterns = [email_pattern, phone_pattern, linkedin_pattern]
 
     try:
-        # Create an in-memory zip file to hold all redacted CVs
         zip_buffer = io.BytesIO()
         
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            # Loop through every file you uploaded
             for uploaded_file in uploaded_files:
                 file_ext = uploaded_file.name.split('.')[-1].lower()
                 output_buffer = io.BytesIO()
@@ -39,14 +37,37 @@ if uploaded_files:
                     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                     
                     for page in doc:
+                        # 1. Standard text extraction
                         text = page.get_text("text")
+                        tp = None  # TextPage placeholder
+                        
+                        # 2. OCR Fallback for scanned images
+                        # If the page has very little text, it is likely an image
+                        if len(text.strip()) < 50:
+                            try:
+                                # Trigger Tesseract OCR to read the image
+                                tp = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True)
+                                text = tp.extractText()
+                            except Exception:
+                                st.warning(f"Note: Could not run OCR on a page in {uploaded_file.name}")
+                        
+                        # 3. Find and Redact
                         for pattern in patterns:
                             for match in pattern.finditer(text):
                                 sensitive_text = match.group()
-                                text_instances = page.search_for(sensitive_text)
+                                
+                                # If we used OCR, we must search the generated OCR TextPage
+                                if tp:
+                                    text_instances = page.search_for(sensitive_text, textpage=tp)
+                                else:
+                                    text_instances = page.search_for(sensitive_text)
+                                    
                                 for inst in text_instances:
                                     page.add_redact_annot(inst, fill=(0, 0, 0))
-                        page.apply_redactions()
+                                    
+                        # Apply redactions. 'images=fitz.PDF_REDACT_IMAGE_PIXELS' ensures that the underlying 
+                        # image data is physically deleted behind the black box so it cannot be recovered.
+                        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS) 
                         
                     doc.save(output_buffer, garbage=4, deflate=True)
                     doc.close()
@@ -61,12 +82,10 @@ if uploaded_files:
                             if pattern.search(run.text):
                                 run.text = pattern.sub("[REDACTED]", run.text)
 
-                    # Search paragraphs
                     for para in doc.paragraphs:
                         for run in para.runs:
                             replace_text_in_run(run)
                             
-                    # Search tables
                     for table in doc.tables:
                         for row in table.rows:
                             for cell in row.cells:
@@ -81,7 +100,6 @@ if uploaded_files:
 
         st.success("All documents processed successfully!")
         
-        # Create a single download button for the whole Zip folder
         st.download_button(
             label="Download All Redacted CVs (ZIP)",
             data=zip_buffer.getvalue(),
