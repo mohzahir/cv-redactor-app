@@ -1,6 +1,5 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import re
 import io
 import zipfile
 import pandas as pd
@@ -8,14 +7,13 @@ import json
 import google.generativeai as genai
 from docx import Document
 
-st.set_page_config(page_title="CV Redactor & AI Extractor", page_icon="📄")
-st.title("Bulk CV Redactor & AI Data Extractor")
-st.write("Upload CVs to redact contact info AND generate an AI-enriched Excel summary.")
+st.set_page_config(page_title="AI CV Redactor & Extractor", page_icon="🤖")
+st.title("AI-Powered Bulk CV Redactor")
+st.write("Upload CVs to have Google Gemini intelligently find and redact contact info, while generating an Excel summary.")
 
-# Safely load the API Key from Streamlit Secrets
+# Safely load the API Key
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Using the fast model for text extraction
     model = genai.GenerativeModel('gemini-2.5-flash')
 except Exception as e:
     st.error("⚠️ Gemini API Key not found. Please add it to Streamlit Secrets.")
@@ -24,13 +22,6 @@ uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], 
 
 if uploaded_files:
     st.info(f"Processing {len(uploaded_files)} document(s)...")
-    
-    # Strict regex for REDACTION only
-    email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-    phone_pattern = re.compile(r"\+?\d{1,4}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}")
-    linkedin_pattern = re.compile(r"linkedin\.com/in/[a-zA-Z0-9_-]+")
-    patterns = [email_pattern, phone_pattern, linkedin_pattern]
-
     all_candidates_data = []
 
     try:
@@ -41,42 +32,97 @@ if uploaded_files:
                 file_ext = uploaded_file.name.split('.')[-1].lower()
                 output_buffer = io.BytesIO()
                 output_filename = f"REDACTED_{uploaded_file.name}"
-                full_text_for_extraction = ""
+                
+                doc_text = ""
+                ocr_pages = {} # To remember which pages needed OCR for the search later
 
-                # --- PDF LOGIC ---
+                # ==========================================
+                # PASS 1: EXTRACT ALL TEXT FOR THE AI
+                # ==========================================
+                file_bytes = uploaded_file.read()
+                
                 if file_ext == "pdf":
-                    pdf_bytes = uploaded_file.read()
-                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                    for page in doc:
+                    doc = fitz.open(stream=file_bytes, filetype="pdf")
+                    for i, page in enumerate(doc):
                         text = page.get_text("text")
-                        tp = None
                         if len(text.strip()) < 50:
                             try:
                                 tp = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True)
                                 text = tp.extractText()
+                                ocr_pages[i] = tp # Save the OCR layer for Pass 2
                             except Exception:
                                 pass
-                        full_text_for_extraction += text + "\n"
-                        for pattern in patterns:
-                            for match in pattern.finditer(text):
-                                sensitive_text = match.group()
-                                text_instances = page.search_for(sensitive_text, textpage=tp) if tp else page.search_for(sensitive_text)
+                        doc_text += text + "\n"
+                        
+                elif file_ext == "docx":
+                    doc = Document(io.BytesIO(file_bytes))
+                    doc_text = "\n".join([para.text for para in doc.paragraphs])
+
+                # ==========================================
+                # PASS 2: AI INTELLIGENCE & JSON EXTRACTION
+                # ==========================================
+                ai_prompt = f"""
+                You are an expert recruitment assistant. Analyze the following CV text and extract the candidate's details into a strict JSON format.
+                
+                Use exactly these keys for the candidate data:
+                "Name", "Qualification", "Age", "Email", "Phone", "Current Position", "Nationality", "Current Location".
+                If a piece of information is missing, use "Not Found" as the value. Do not guess.
+
+                CRITICAL INSTRUCTION FOR REDACTION:
+                Create a 9th key named "Exact_Contacts_To_Redact". This must be a list of strings containing EVERY phone number, email address, and LinkedIn profile URL you found in the text.
+                You MUST extract these strings EXACTLY as they appear in the text, character-for-character, including all spaces, dashes, or formatting. If the text says "+9 7 1 (50) 123", you must return exactly "+9 7 1 (50) 123". Do not fix or reformat them, or the system will fail to redact them.
+
+                Return ONLY the raw JSON object, without markdown formatting.
+                
+                CV Text:
+                {doc_text[:8000]}
+                """
+                
+                try:
+                    response = model.generate_content(ai_prompt)
+                    json_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
+                    extracted_data = json.loads(json_text)
+                except Exception as e:
+                    extracted_data = {
+                        "Name": "AI Error", "Qualification": "AI Error", "Age": "AI Error", 
+                        "Email": "AI Error", "Phone": "AI Error", "Current Position": "AI Error", 
+                        "Nationality": "AI Error", "Current Location": "AI Error",
+                        "Exact_Contacts_To_Redact": []
+                    }
+
+                # Get the exact strings the AI found
+                strings_to_redact = extracted_data.get("Exact_Contacts_To_Redact", [])
+                
+                # Add to Excel list (remove the redaction list from the final Excel row)
+                candidate_record = {"File Name": uploaded_file.name}
+                for key in ["Name", "Qualification", "Age", "Email", "Phone", "Current Position", "Nationality", "Current Location"]:
+                    candidate_record[key] = extracted_data.get(key, "Not Found")
+                all_candidates_data.append(candidate_record)
+
+                # ==========================================
+                # PASS 3: REDACT THE EXACT STRINGS
+                # ==========================================
+                if file_ext == "pdf":
+                    for i, page in enumerate(doc):
+                        tp = ocr_pages.get(i) # Retrieve OCR layer if we made one earlier
+                        
+                        for target_string in strings_to_redact:
+                            # Only search if string is substantial (prevents redacting random tiny words)
+                            if target_string and len(str(target_string).strip()) > 4:
+                                text_instances = page.search_for(str(target_string), textpage=tp) if tp else page.search_for(str(target_string))
                                 for inst in text_instances:
                                     page.add_redact_annot(inst, fill=(0, 0, 0))
+                                    
                         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
                     doc.save(output_buffer, garbage=4, deflate=True)
                     doc.close()
 
-                # --- WORD LOGIC ---
                 elif file_ext == "docx":
-                    docx_bytes = uploaded_file.read()
-                    doc = Document(io.BytesIO(docx_bytes))
-                    full_text_for_extraction = "\n".join([para.text for para in doc.paragraphs])
-                    
                     def replace_text_in_run(run):
-                        for pattern in patterns:
-                            if pattern.search(run.text):
-                                run.text = pattern.sub("[REDACTED]", run.text)
+                        for target_string in strings_to_redact:
+                            if target_string and len(str(target_string).strip()) > 4:
+                                if str(target_string) in run.text:
+                                    run.text = run.text.replace(str(target_string), "[REDACTED]")
 
                     for para in doc.paragraphs:
                         for run in para.runs:
@@ -89,38 +135,8 @@ if uploaded_files:
                                         replace_text_in_run(run)
                     doc.save(output_buffer)
 
-                # Write redacted CV to zip
+                # Write finished file to zip
                 zip_file.writestr(output_filename, output_buffer.getvalue())
-
-                # --- AI DATA EXTRACTION FOR EXCEL ---
-                ai_prompt = f"""
-                You are an expert recruitment assistant. Analyze the following CV text and extract the candidate's details into a strict JSON format.
-                Use exactly these keys: "Name", "Qualification", "Age", "Email", "Phone", "Current Position", "Nationality", "Current Location".
-                If a piece of information is not present in the text, use "Not Found" as the value. Do not guess.
-                Return ONLY the raw JSON object, without any markdown formatting or explanations.
-                
-                CV Text:
-                {full_text_for_extraction[:8000]}
-                """
-                
-                try:
-                    # Ask the AI to read the CV
-                    response = model.generate_content(ai_prompt)
-                    # Clean up the response to ensure it's pure JSON
-                    json_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
-                    extracted_data = json.loads(json_text)
-                except Exception as e:
-                    # Fallback if the AI gets confused by a weirdly formatted CV
-                    extracted_data = {
-                        "Name": "AI Error", "Qualification": "AI Error", "Age": "AI Error", 
-                        "Email": "AI Error", "Phone": "AI Error", "Current Position": "AI Error", 
-                        "Nationality": "AI Error", "Current Location": "AI Error"
-                    }
-
-                # Add the File Name and the AI's data to our master list
-                candidate_record = {"File Name": uploaded_file.name}
-                candidate_record.update(extracted_data)
-                all_candidates_data.append(candidate_record)
 
             # --- CREATE THE EXCEL FILE ---
             df = pd.DataFrame(all_candidates_data)
@@ -129,14 +145,13 @@ if uploaded_files:
                 df.to_excel(writer, index=False, sheet_name='Candidates')
             zip_file.writestr("Candidate_Summary_Data.xlsx", excel_buffer.getvalue())
 
-        st.success("All documents processed and data extracted via AI!")
+        st.success("All documents processed and redacted via AI!")
         st.download_button(
             label="Download Zip (Redacted CVs + AI Excel Data)",
             data=zip_buffer.getvalue(),
-            file_name="Processed_CVs_and_Data.zip",
+            file_name="AI_Processed_CVs.zip",
             mime="application/zip"
         )
         
     except Exception as e:
         st.error(f"An error occurred while processing: {e}")
-
