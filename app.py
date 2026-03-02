@@ -5,6 +5,7 @@ import os
 import io
 import zipfile
 import pandas as pd
+import tempfile  # <--- NEW: To hide files from the Streamlit watcher
 from docx import Document
 
 st.set_page_config(page_title="Bulk CV Redactor", page_icon="📄")
@@ -14,6 +15,8 @@ st.write("Upload CVs to automatically redact contact info using strict pattern m
 # Initialize the session state to track if processing is done
 if "file_ready" not in st.session_state:
     st.session_state.file_ready = False
+if "zip_path" not in st.session_state:
+    st.session_state.zip_path = ""
 
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
@@ -27,18 +30,21 @@ if uploaded_files:
             patterns = [email_pattern, phone_pattern, linkedin_pattern]
             
             all_candidates_data = []
-            zip_path = "Processed_CVs.zip"
+            
+            # --- FIX: Get the hidden system temp folder so Streamlit doesn't auto-refresh ---
+            sys_temp_dir = tempfile.gettempdir()
+            zip_path = os.path.join(sys_temp_dir, "Processed_CVs.zip")
             
             try:
-                # Write the zip file directly to the server's physical storage
+                # Write the zip file directly to the hidden physical storage
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for uploaded_file in uploaded_files:
                         file_ext = uploaded_file.name.split('.')[-1].lower()
                         output_filename = f"REDACTED_{uploaded_file.name}"
                         full_text_for_extraction = ""
                         
-                        # Create a temporary physical file name for the redacted doc
-                        temp_output_path = f"temp_{output_filename}"
+                        # Create a temporary physical file name in the hidden folder
+                        temp_output_path = os.path.join(sys_temp_dir, f"temp_{output_filename}")
                         
                         # ==========================================
                         # PDF PROCESSING
@@ -125,16 +131,17 @@ if uploaded_files:
                         os.remove(temp_output_path)
 
                     # ==========================================
-                    # GENERATE EXCEL AND ADD TO ZIP (Properly Indented!)
+                    # GENERATE EXCEL AND ADD TO ZIP
                     # ==========================================
                     df = pd.DataFrame(all_candidates_data)
-                    excel_temp_path = "temp_Candidate_Summary.xlsx"
+                    excel_temp_path = os.path.join(sys_temp_dir, "temp_Candidate_Summary.xlsx")
                     df.to_excel(excel_temp_path, index=False, sheet_name='Candidates')
                     
                     zip_file.write(excel_temp_path, "Candidate_Summary_Data.xlsx")
                     os.remove(excel_temp_path)
 
                 # Signal that the file is physically saved and ready
+                st.session_state.zip_path = zip_path
                 st.session_state.file_ready = True
                 st.success("Processing complete! Click below to download.")
                 
@@ -142,11 +149,11 @@ if uploaded_files:
                 st.error(f"An error occurred while processing: {e}")
 
 # --- DOWNLOAD LOGIC ---
-if st.session_state.file_ready and os.path.exists("Processed_CVs.zip"):
-    with open("Processed_CVs.zip", "rb") as physical_file:
+if st.session_state.file_ready and os.path.exists(st.session_state.zip_path):
+    with open(st.session_state.zip_path, "rb") as physical_file:
         st.download_button(
             label="Download Zip (Redacted CVs + Excel Data)",
             data=physical_file,
             file_name="Processed_CVs.zip",
             mime="application/zip"
-        )
+                            )
