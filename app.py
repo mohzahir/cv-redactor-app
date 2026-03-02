@@ -14,13 +14,14 @@ st.write("Upload CVs to have Google Gemini intelligently find and redact contact
 # Safely load the API Key and force JSON output
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Using gemini-1.5-flash as it is highly stable, and forcing pure JSON output
+    # Using the current active model and forcing pure JSON output
     model = genai.GenerativeModel(
-        'gemini-1.5-flash',
+        'gemini-2.5-flash',
         generation_config={"response_mime_type": "application/json"}
     )
 except Exception as e:
     st.error(f"⚠️ API Setup Error: {e}")
+
 
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
@@ -157,3 +158,4 @@ if uploaded_files:
         
     except Exception as e:
         st.error(f"An error occurred while processing: {e}")
+
