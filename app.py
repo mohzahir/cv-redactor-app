@@ -34,7 +34,7 @@ if uploaded_files:
                 output_filename = f"REDACTED_{uploaded_file.name}"
                 
                 doc_text = ""
-                ocr_pages = {} # To remember which pages needed OCR for the search later
+                doc = None
 
                 # ==========================================
                 # PASS 1: EXTRACT ALL TEXT FOR THE AI
@@ -43,20 +43,18 @@ if uploaded_files:
                 
                 if file_ext == "pdf":
                     doc = fitz.open(stream=file_bytes, filetype="pdf")
-                    for i, page in enumerate(doc):
+                    for page in doc:
                         text = page.get_text("text")
                         if len(text.strip()) < 50:
                             try:
-                                tp = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True)
-                                text = tp.extractText()
-                                ocr_pages[i] = tp # Save the OCR layer for Pass 2
+                                text = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True).extractText()
                             except Exception:
                                 pass
                         doc_text += text + "\n"
                         
                 elif file_ext == "docx":
-                    doc = Document(io.BytesIO(file_bytes))
-                    doc_text = "\n".join([para.text for para in doc.paragraphs])
+                    doc_docx = Document(io.BytesIO(file_bytes))
+                    doc_text = "\n".join([para.text for para in doc_docx.paragraphs])
 
                 # ==========================================
                 # PASS 2: AI INTELLIGENCE & JSON EXTRACTION
@@ -90,10 +88,8 @@ if uploaded_files:
                         "Exact_Contacts_To_Redact": []
                     }
 
-                # Get the exact strings the AI found
                 strings_to_redact = extracted_data.get("Exact_Contacts_To_Redact", [])
                 
-                # Add to Excel list (remove the redaction list from the final Excel row)
                 candidate_record = {"File Name": uploaded_file.name}
                 for key in ["Name", "Qualification", "Age", "Email", "Phone", "Current Position", "Nationality", "Current Location"]:
                     candidate_record[key] = extracted_data.get(key, "Not Found")
@@ -102,12 +98,17 @@ if uploaded_files:
                 # ==========================================
                 # PASS 3: REDACT THE EXACT STRINGS
                 # ==========================================
-                if file_ext == "pdf":
-                    for i, page in enumerate(doc):
-                        tp = ocr_pages.get(i) # Retrieve OCR layer if we made one earlier
+                if file_ext == "pdf" and doc is not None:
+                    for page in doc:
+                        # Re-generate OCR textpage safely on the fly to avoid weak reference errors
+                        tp = None
+                        if len(page.get_text("text").strip()) < 50:
+                            try:
+                                tp = page.get_textpage_ocr(flags=0, language='eng', dpi=150, full=True)
+                            except Exception:
+                                pass
                         
                         for target_string in strings_to_redact:
-                            # Only search if string is substantial (prevents redacting random tiny words)
                             if target_string and len(str(target_string).strip()) > 4:
                                 text_instances = page.search_for(str(target_string), textpage=tp) if tp else page.search_for(str(target_string))
                                 for inst in text_instances:
@@ -118,24 +119,24 @@ if uploaded_files:
                     doc.close()
 
                 elif file_ext == "docx":
+                    doc_docx = Document(io.BytesIO(file_bytes)) # Reload the Word doc safely
                     def replace_text_in_run(run):
                         for target_string in strings_to_redact:
                             if target_string and len(str(target_string).strip()) > 4:
                                 if str(target_string) in run.text:
                                     run.text = run.text.replace(str(target_string), "[REDACTED]")
 
-                    for para in doc.paragraphs:
+                    for para in doc_docx.paragraphs:
                         for run in para.runs:
                             replace_text_in_run(run)
-                    for table in doc.tables:
+                    for table in doc_docx.tables:
                         for row in table.rows:
                             for cell in row.cells:
                                 for para in cell.paragraphs:
                                     for run in para.runs:
                                         replace_text_in_run(run)
-                    doc.save(output_buffer)
+                    doc_docx.save(output_buffer)
 
-                # Write finished file to zip
                 zip_file.writestr(output_filename, output_buffer.getvalue())
 
             # --- CREATE THE EXCEL FILE ---
