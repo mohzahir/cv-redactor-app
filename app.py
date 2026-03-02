@@ -27,7 +27,7 @@ if uploaded_files:
     
     # Strict regex for REDACTION only
     email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-    phone_pattern = re.compile(r"(?<!\w)(?:(?:\+|00)\d{1,3}[-.\s]?|(?:\(?0\d{1,2}\)?)[-.\s]?)(?:\d[-.\s]?){6,10}\b")
+    phone_pattern = re.compile(r"\+?\d{1,4}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}")
     linkedin_pattern = re.compile(r"linkedin\.com/in/[a-zA-Z0-9_-]+")
     patterns = [email_pattern, phone_pattern, linkedin_pattern]
 
@@ -139,3 +139,4 @@ if uploaded_files:
         
     except Exception as e:
         st.error(f"An error occurred while processing: {e}")
+
