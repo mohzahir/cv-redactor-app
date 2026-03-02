@@ -2,7 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 import re
 import os
-import io  # <--- WE JUST NEED TO ADD THIS BACK
+import io
 import zipfile
 import pandas as pd
 from docx import Document
@@ -124,15 +124,15 @@ if uploaded_files:
                         zip_file.write(temp_output_path, output_filename)
                         os.remove(temp_output_path)
 
-                # ==========================================
-                # GENERATE EXCEL AND ADD TO ZIP
-                # ==========================================
-                df = pd.DataFrame(all_candidates_data)
-                excel_temp_path = "temp_Candidate_Summary.xlsx"
-                df.to_excel(excel_temp_path, index=False, sheet_name='Candidates')
-                
-                zip_file.write(excel_temp_path, "Candidate_Summary_Data.xlsx")
-                os.remove(excel_temp_path)
+                    # ==========================================
+                    # GENERATE EXCEL AND ADD TO ZIP (Properly Indented!)
+                    # ==========================================
+                    df = pd.DataFrame(all_candidates_data)
+                    excel_temp_path = "temp_Candidate_Summary.xlsx"
+                    df.to_excel(excel_temp_path, index=False, sheet_name='Candidates')
+                    
+                    zip_file.write(excel_temp_path, "Candidate_Summary_Data.xlsx")
+                    os.remove(excel_temp_path)
 
                 # Signal that the file is physically saved and ready
                 st.session_state.file_ready = True
@@ -142,7 +142,6 @@ if uploaded_files:
                 st.error(f"An error occurred while processing: {e}")
 
 # --- DOWNLOAD LOGIC ---
-# If the file is marked as ready AND it physically exists on the server's hard drive
 if st.session_state.file_ready and os.path.exists("Processed_CVs.zip"):
     with open("Processed_CVs.zip", "rb") as physical_file:
         st.download_button(
@@ -151,4 +150,3 @@ if st.session_state.file_ready and os.path.exists("Processed_CVs.zip"):
             file_name="Processed_CVs.zip",
             mime="application/zip"
         )
-
