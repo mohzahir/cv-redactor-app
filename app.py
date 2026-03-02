@@ -4,7 +4,7 @@ import io
 import zipfile
 import pandas as pd
 import json
-import time  # <--- NEW: We need this to pause the script
+import time
 import google.generativeai as genai
 from docx import Document
 
@@ -12,7 +12,7 @@ st.set_page_config(page_title="AI CV Redactor & Extractor", page_icon="🤖")
 st.title("AI-Powered Bulk CV Redactor")
 st.write("Upload CVs to have Google Gemini intelligently find and redact contact info, while generating an Excel summary.")
 
-# Safely load the API Key and force JSON output
+# Safely load the API Key
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel(
@@ -25,7 +25,7 @@ except Exception as e:
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
 if uploaded_files:
-    st.info(f"Processing {len(uploaded_files)} document(s). This will take a moment to prevent rate-limiting...")
+    st.info(f"Processing {len(uploaded_files)} document(s). Please keep this window open...")
     all_candidates_data = []
 
     try:
@@ -61,7 +61,7 @@ if uploaded_files:
                     doc_text = "\n".join([para.text for para in doc_docx.paragraphs])
 
                 # ==========================================
-                # PASS 2: AI INTELLIGENCE & JSON EXTRACTION
+                # PASS 2: AI INTELLIGENCE & SMART RETRY
                 # ==========================================
                 ai_prompt = f"""
                 Extract the candidate's details from the CV text into a JSON object using exactly these keys:
@@ -76,22 +76,31 @@ if uploaded_files:
                 {doc_text[:8000]}
                 """
                 
-                try:
-                    response = model.generate_content(ai_prompt)
-                    extracted_data = json.loads(response.text)
-                    
-                    # --- THE FIX ---
-                    # Tell Python to wait 4 seconds before the next API call to avoid 429 Quota errors
-                    time.sleep(4) 
-                    
-                except Exception as e:
-                    error_msg = f"System Error: {str(e)[:40]}"
-                    extracted_data = {
-                        "Name": error_msg, "Qualification": error_msg, "Age": error_msg, 
-                        "Email": error_msg, "Phone": error_msg, "Current Position": error_msg, 
-                        "Nationality": error_msg, "Current Location": error_msg,
-                        "Exact_Contacts_To_Redact": []
-                    }
+                max_retries = 3
+                retry_delay = 10
+                extracted_data = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        response = model.generate_content(ai_prompt)
+                        extracted_data = json.loads(response.text)
+                        time.sleep(3)  # Standard small pause
+                        break  # Success! Break out of the retry loop
+                    except Exception as e:
+                        if "429" in str(e) and attempt < max_retries - 1:
+                            # We hit the speed limit. Wait and try again.
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Next wait will be 20 seconds
+                        else:
+                            # We ran out of retries, or hit the hard daily limit
+                            error_msg = f"System Error: {str(e)[:40]}"
+                            extracted_data = {
+                                "Name": error_msg, "Qualification": error_msg, "Age": error_msg, 
+                                "Email": error_msg, "Phone": error_msg, "Current Position": error_msg, 
+                                "Nationality": error_msg, "Current Location": error_msg,
+                                "Exact_Contacts_To_Redact": []
+                            }
+                            break
 
                 strings_to_redact = extracted_data.get("Exact_Contacts_To_Redact", [])
                 
