@@ -2,6 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 import re
 import os
+import io  # <--- WE JUST NEED TO ADD THIS BACK
 import zipfile
 import pandas as pd
 from docx import Document
@@ -150,3 +151,4 @@ if st.session_state.file_ready and os.path.exists("Processed_CVs.zip"):
             file_name="Processed_CVs.zip",
             mime="application/zip"
         )
+
