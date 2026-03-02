@@ -1,28 +1,26 @@
 import streamlit as st
 import fitz  # PyMuPDF
 import re
-import os
 import io
 import zipfile
 import pandas as pd
-import tempfile 
 from docx import Document
 
 st.set_page_config(page_title="Bulk CV Redactor", page_icon="📄")
 st.title("Bulk CV Contact Redactor")
 st.write("Upload CVs to automatically redact contact info using strict pattern matching, and generate an Excel summary.")
 
-# Initialize the session state
-if "file_ready" not in st.session_state:
-    st.session_state.file_ready = False
-if "zip_path" not in st.session_state:
-    st.session_state.zip_path = ""
+# --- Initialize secure RAM memory ---
+if "processed_zip_bytes" not in st.session_state:
+    st.session_state.processed_zip_bytes = None
 
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
 if uploaded_files:
     if st.button("Process CVs"):
-        with st.spinner("Processing documents... Please wait."):
+        
+        # --- NEW: Beautiful visual loading spinner ---
+        with st.spinner("Analyzing and Redacting CVs... Please wait."):
             
             email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
             phone_pattern = re.compile(r"(?<!\d)(?:(?:\+|00)\d{1,3}[\s\-.]?|0\d{1,2}[\s\-.]?)[\d\s\-]{6,10}\d(?!\d)")
@@ -31,19 +29,22 @@ if uploaded_files:
             
             all_candidates_data = []
             
-            sys_temp_dir = tempfile.gettempdir()
-            zip_path = os.path.join(sys_temp_dir, "Processed_CVs.zip")
-            
             try:
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                # Open a secure stream in the server's RAM
+                memory_zip = io.BytesIO()
+                
+                with zipfile.ZipFile(memory_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for uploaded_file in uploaded_files:
                         file_ext = uploaded_file.name.split('.')[-1].lower()
                         output_filename = f"REDACTED_{uploaded_file.name}"
                         full_text_for_extraction = ""
                         
-                        temp_output_path = os.path.join(sys_temp_dir, f"temp_{output_filename}")
+                        # Open a mini RAM stream for each individual file
+                        output_buffer = io.BytesIO()
                         
-                        # --- PDF ---
+                        # ==========================================
+                        # PDF PROCESSING
+                        # ==========================================
                         if file_ext == "pdf":
                             pdf_bytes = uploaded_file.read()
                             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -70,10 +71,12 @@ if uploaded_files:
                                 
                                 page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
                                 
-                            doc.save(temp_output_path, garbage=4, deflate=True)
+                            doc.save(output_buffer, garbage=4, deflate=True)
                             doc.close()
 
-                        # --- DOCX ---
+                        # ==========================================
+                        # WORD DOCUMENT PROCESSING
+                        # ==========================================
                         elif file_ext == "docx":
                             docx_bytes = uploaded_file.read()
                             doc_docx = Document(io.BytesIO(docx_bytes))
@@ -96,9 +99,11 @@ if uploaded_files:
                                             for run in para.runs:
                                                 replace_text_in_run(run)
                                                 
-                            doc_docx.save(temp_output_path)
+                            doc_docx.save(output_buffer)
 
-                        # --- EXCEL EXTRACTION ---
+                        # ==========================================
+                        # EXCEL DATA EXTRACTION
+                        # ==========================================
                         found_emails = email_pattern.findall(full_text_for_extraction)
                         found_phones = phone_pattern.findall(full_text_for_extraction)
                         
@@ -117,31 +122,31 @@ if uploaded_files:
                             "Current Location": ""
                         })
 
-                        zip_file.write(temp_output_path, output_filename)
-                        os.remove(temp_output_path)
+                        # Write the redacted file bytes directly into the Zip
+                        zip_file.writestr(output_filename, output_buffer.getvalue())
 
+                    # ==========================================
+                    # GENERATE EXCEL AND ADD TO ZIP
+                    # ==========================================
                     df = pd.DataFrame(all_candidates_data)
-                    excel_temp_path = os.path.join(sys_temp_dir, "temp_Candidate_Summary.xlsx")
-                    df.to_excel(excel_temp_path, index=False, sheet_name='Candidates')
+                    excel_buffer = io.BytesIO()
+                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Candidates')
                     
-                    zip_file.write(excel_temp_path, "Candidate_Summary_Data.xlsx")
-                    os.remove(excel_temp_path)
+                    zip_file.writestr("Candidate_Summary_Data.xlsx", excel_buffer.getvalue())
 
-                st.session_state.zip_path = zip_path
-                st.session_state.file_ready = True
-                st.success("Processing complete! Click below to download.")
+                # --- NEW: Extract the raw bytes from RAM and save to session state ---
+                st.session_state.processed_zip_bytes = memory_zip.getvalue()
+                st.success("Processing complete! Your file is ready.")
                 
             except Exception as e:
                 st.error(f"An error occurred while processing: {e}")
 
 # --- DOWNLOAD LOGIC ---
-if st.session_state.file_ready and os.path.exists(st.session_state.zip_path):
-    with open(st.session_state.zip_path, "rb") as physical_file:
-        zip_bytes = physical_file.read()
-        
+if st.session_state.processed_zip_bytes is not None:
     st.download_button(
         label="Download Zip (Redacted CVs + Excel Data)",
-        data=zip_bytes,
+        data=st.session_state.processed_zip_bytes,
         file_name="Processed_CVs.zip",
         mime="application/zip"
     )
