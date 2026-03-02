@@ -4,6 +4,7 @@ import io
 import zipfile
 import pandas as pd
 import json
+import time  # <--- NEW: We need this to pause the script
 import google.generativeai as genai
 from docx import Document
 
@@ -14,7 +15,6 @@ st.write("Upload CVs to have Google Gemini intelligently find and redact contact
 # Safely load the API Key and force JSON output
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # Using the current active model and forcing pure JSON output
     model = genai.GenerativeModel(
         'gemini-2.5-flash',
         generation_config={"response_mime_type": "application/json"}
@@ -22,11 +22,10 @@ try:
 except Exception as e:
     st.error(f"⚠️ API Setup Error: {e}")
 
-
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
 if uploaded_files:
-    st.info(f"Processing {len(uploaded_files)} document(s)...")
+    st.info(f"Processing {len(uploaded_files)} document(s). This will take a moment to prevent rate-limiting...")
     all_candidates_data = []
 
     try:
@@ -79,10 +78,13 @@ if uploaded_files:
                 
                 try:
                     response = model.generate_content(ai_prompt)
-                    # Because we forced JSON mode, we don't need to strip markdown anymore
                     extracted_data = json.loads(response.text)
+                    
+                    # --- THE FIX ---
+                    # Tell Python to wait 4 seconds before the next API call to avoid 429 Quota errors
+                    time.sleep(4) 
+                    
                 except Exception as e:
-                    # If it fails, capture the exact system error so we can debug it
                     error_msg = f"System Error: {str(e)[:40]}"
                     extracted_data = {
                         "Name": error_msg, "Qualification": error_msg, "Age": error_msg, 
@@ -158,4 +160,3 @@ if uploaded_files:
         
     except Exception as e:
         st.error(f"An error occurred while processing: {e}")
-
