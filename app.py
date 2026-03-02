@@ -5,14 +5,14 @@ import os
 import io
 import zipfile
 import pandas as pd
-import tempfile  # <--- NEW: To hide files from the Streamlit watcher
+import tempfile 
 from docx import Document
 
 st.set_page_config(page_title="Bulk CV Redactor", page_icon="📄")
 st.title("Bulk CV Contact Redactor")
 st.write("Upload CVs to automatically redact contact info using strict pattern matching, and generate an Excel summary.")
 
-# Initialize the session state to track if processing is done
+# Initialize the session state
 if "file_ready" not in st.session_state:
     st.session_state.file_ready = False
 if "zip_path" not in st.session_state:
@@ -31,24 +31,19 @@ if uploaded_files:
             
             all_candidates_data = []
             
-            # --- FIX: Get the hidden system temp folder so Streamlit doesn't auto-refresh ---
             sys_temp_dir = tempfile.gettempdir()
             zip_path = os.path.join(sys_temp_dir, "Processed_CVs.zip")
             
             try:
-                # Write the zip file directly to the hidden physical storage
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for uploaded_file in uploaded_files:
                         file_ext = uploaded_file.name.split('.')[-1].lower()
                         output_filename = f"REDACTED_{uploaded_file.name}"
                         full_text_for_extraction = ""
                         
-                        # Create a temporary physical file name in the hidden folder
                         temp_output_path = os.path.join(sys_temp_dir, f"temp_{output_filename}")
                         
-                        # ==========================================
-                        # PDF PROCESSING
-                        # ==========================================
+                        # --- PDF ---
                         if file_ext == "pdf":
                             pdf_bytes = uploaded_file.read()
                             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -78,9 +73,7 @@ if uploaded_files:
                             doc.save(temp_output_path, garbage=4, deflate=True)
                             doc.close()
 
-                        # ==========================================
-                        # WORD DOCUMENT PROCESSING
-                        # ==========================================
+                        # --- DOCX ---
                         elif file_ext == "docx":
                             docx_bytes = uploaded_file.read()
                             doc_docx = Document(io.BytesIO(docx_bytes))
@@ -105,9 +98,7 @@ if uploaded_files:
                                                 
                             doc_docx.save(temp_output_path)
 
-                        # ==========================================
-                        # EXCEL DATA EXTRACTION
-                        # ==========================================
+                        # --- EXCEL EXTRACTION ---
                         found_emails = email_pattern.findall(full_text_for_extraction)
                         found_phones = phone_pattern.findall(full_text_for_extraction)
                         
@@ -126,13 +117,9 @@ if uploaded_files:
                             "Current Location": ""
                         })
 
-                        # Add the temp file to the Zip folder, then delete the temp file
                         zip_file.write(temp_output_path, output_filename)
                         os.remove(temp_output_path)
 
-                    # ==========================================
-                    # GENERATE EXCEL AND ADD TO ZIP
-                    # ==========================================
                     df = pd.DataFrame(all_candidates_data)
                     excel_temp_path = os.path.join(sys_temp_dir, "temp_Candidate_Summary.xlsx")
                     df.to_excel(excel_temp_path, index=False, sheet_name='Candidates')
@@ -140,7 +127,6 @@ if uploaded_files:
                     zip_file.write(excel_temp_path, "Candidate_Summary_Data.xlsx")
                     os.remove(excel_temp_path)
 
-                # Signal that the file is physically saved and ready
                 st.session_state.zip_path = zip_path
                 st.session_state.file_ready = True
                 st.success("Processing complete! Click below to download.")
@@ -151,9 +137,11 @@ if uploaded_files:
 # --- DOWNLOAD LOGIC ---
 if st.session_state.file_ready and os.path.exists(st.session_state.zip_path):
     with open(st.session_state.zip_path, "rb") as physical_file:
-        st.download_button(
-            label="Download Zip (Redacted CVs + Excel Data)",
-            data=physical_file,
-            file_name="Processed_CVs.zip",
-            mime="application/zip"
-                            )
+        zip_bytes = physical_file.read()
+        
+    st.download_button(
+        label="Download Zip (Redacted CVs + Excel Data)",
+        data=zip_bytes,
+        file_name="Processed_CVs.zip",
+        mime="application/zip"
+    )
