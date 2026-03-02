@@ -11,12 +11,16 @@ st.set_page_config(page_title="AI CV Redactor & Extractor", page_icon="🤖")
 st.title("AI-Powered Bulk CV Redactor")
 st.write("Upload CVs to have Google Gemini intelligently find and redact contact info, while generating an Excel summary.")
 
-# Safely load the API Key
+# Safely load the API Key and force JSON output
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # Using gemini-1.5-flash as it is highly stable, and forcing pure JSON output
+    model = genai.GenerativeModel(
+        'gemini-1.5-flash',
+        generation_config={"response_mime_type": "application/json"}
+    )
 except Exception as e:
-    st.error("⚠️ Gemini API Key not found. Please add it to Streamlit Secrets.")
+    st.error(f"⚠️ API Setup Error: {e}")
 
 uploaded_files = st.file_uploader("Upload candidate CVs", type=["pdf", "docx"], accept_multiple_files=True)
 
@@ -60,17 +64,13 @@ if uploaded_files:
                 # PASS 2: AI INTELLIGENCE & JSON EXTRACTION
                 # ==========================================
                 ai_prompt = f"""
-                You are an expert recruitment assistant. Analyze the following CV text and extract the candidate's details into a strict JSON format.
-                
-                Use exactly these keys for the candidate data:
+                Extract the candidate's details from the CV text into a JSON object using exactly these keys:
                 "Name", "Qualification", "Age", "Email", "Phone", "Current Position", "Nationality", "Current Location".
-                If a piece of information is missing, use "Not Found" as the value. Do not guess.
+                If a piece of information is missing, use "Not Found" as the value.
 
                 CRITICAL INSTRUCTION FOR REDACTION:
-                Create a 9th key named "Exact_Contacts_To_Redact". This must be a list of strings containing EVERY phone number, email address, and LinkedIn profile URL you found in the text.
-                You MUST extract these strings EXACTLY as they appear in the text, character-for-character, including all spaces, dashes, or formatting. If the text says "+9 7 1 (50) 123", you must return exactly "+9 7 1 (50) 123". Do not fix or reformat them, or the system will fail to redact them.
-
-                Return ONLY the raw JSON object, without markdown formatting.
+                Create a 9th key named "Exact_Contacts_To_Redact". This must be an array of strings containing EVERY phone number, email address, and LinkedIn profile URL you found in the text.
+                You MUST extract these strings EXACTLY as they appear in the text, character-for-character, including all spaces, dashes, or formatting.
                 
                 CV Text:
                 {doc_text[:8000]}
@@ -78,13 +78,15 @@ if uploaded_files:
                 
                 try:
                     response = model.generate_content(ai_prompt)
-                    json_text = response.text.strip().removeprefix('```json').removesuffix('```').strip()
-                    extracted_data = json.loads(json_text)
+                    # Because we forced JSON mode, we don't need to strip markdown anymore
+                    extracted_data = json.loads(response.text)
                 except Exception as e:
+                    # If it fails, capture the exact system error so we can debug it
+                    error_msg = f"System Error: {str(e)[:40]}"
                     extracted_data = {
-                        "Name": "AI Error", "Qualification": "AI Error", "Age": "AI Error", 
-                        "Email": "AI Error", "Phone": "AI Error", "Current Position": "AI Error", 
-                        "Nationality": "AI Error", "Current Location": "AI Error",
+                        "Name": error_msg, "Qualification": error_msg, "Age": error_msg, 
+                        "Email": error_msg, "Phone": error_msg, "Current Position": error_msg, 
+                        "Nationality": error_msg, "Current Location": error_msg,
                         "Exact_Contacts_To_Redact": []
                     }
 
@@ -100,7 +102,6 @@ if uploaded_files:
                 # ==========================================
                 if file_ext == "pdf" and doc is not None:
                     for page in doc:
-                        # Re-generate OCR textpage safely on the fly to avoid weak reference errors
                         tp = None
                         if len(page.get_text("text").strip()) < 50:
                             try:
@@ -119,7 +120,7 @@ if uploaded_files:
                     doc.close()
 
                 elif file_ext == "docx":
-                    doc_docx = Document(io.BytesIO(file_bytes)) # Reload the Word doc safely
+                    doc_docx = Document(io.BytesIO(file_bytes)) 
                     def replace_text_in_run(run):
                         for target_string in strings_to_redact:
                             if target_string and len(str(target_string).strip()) > 4:
@@ -146,9 +147,9 @@ if uploaded_files:
                 df.to_excel(writer, index=False, sheet_name='Candidates')
             zip_file.writestr("Candidate_Summary_Data.xlsx", excel_buffer.getvalue())
 
-        st.success("All documents processed and redacted via AI!")
+        st.success("All documents processed!")
         st.download_button(
-            label="Download Zip (Redacted CVs + AI Excel Data)",
+            label="Download Zip",
             data=zip_buffer.getvalue(),
             file_name="AI_Processed_CVs.zip",
             mime="application/zip"
